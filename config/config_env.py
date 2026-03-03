@@ -24,7 +24,7 @@ config_env = {
 # These are intentionally outside `config_env` so tune_eval_rllib.py
 # strict key validation remains unchanged.
 config_sweep_max_rounds = {
-    "num_seeds": 5,
+    "num_seeds": 10,
     "seed_start": 0,
     "ci_level": 0.95,
 }

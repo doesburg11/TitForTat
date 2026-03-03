@@ -222,17 +222,50 @@ Outputs:
 - Plot in `checkpoints/max_rounds_cooperation_sweep/cooperation_vs_max_rounds_<timestamp>.png`
 - Summary JSON in `checkpoints/max_rounds_cooperation_sweep/summary_<timestamp>.json`
 
-Example plot:
+Result incorporated here:
+
+- Plot file: `checkpoints/max_rounds_cooperation_sweep/cooperation_vs_max_rounds_20260303_111907_840197.png`
+- Summary file: `checkpoints/max_rounds_cooperation_sweep/summary_20260303_111907_840197.json`
+- Seeds: `[0, 1, 2, 3, 4]` (5 runs per `max_rounds`)
+- Confidence level: `95%`
 
 <div align="center">
-  <img src="assets/cooperation_vs_max_rounds.png" alt="Sequential Iterated Prisoner's Dilemma cooperation chart" width="1000" />
-  <p><strong>Display 2: Mean cooperation rates of both players across the number of repeated prisoner's dilemma games, with confidence bands.</strong></p>
+  <img src="assets/cooperation_vs_max_rounds_20260303_111907_840197.png" alt="Sequential Iterated Prisoner's Dilemma cooperation chart (5 seeds, 95% CI)" width="1000" />
+  <p><strong>Display 2: Mean cooperation rates (5 seeds) across the number of repeated prisoner's dilemma games, with 95% confidence bands.</strong></p>
 </div>
 
-Why cooperation can still appear (even in finite horizon):
+Observed result (this run):
 
-- Backward induction is an equilibrium solution concept for fully rational players with exact reasoning; PPO self-play is approximate optimization and does not guarantee subgame-perfect equilibrium.
-- Both agents learn simultaneously against a moving opponent policy, so training can settle into cooperative conventions or other local fixed points.
-- Neural function approximation, entropy regularization, and finite training budgets can prevent clean unraveling to all-defect.
-- With finite samples and sometimes a single seed, measured cooperation can look noisy and persist at longer horizons.
-- This pattern does not invalidate theory; it shows the gap between game-theoretic predictions and practical multi-agent RL dynamics.
+- Cooperation is mostly near zero for many horizons (`5, 10, 40, 45, 55, 70, 75, 90` are exactly `0.0` for both or nearly both players).
+- The strongest cooperation bump is at `max_rounds=35`:
+  - `player_1 mean = 0.0686` with `95% CI [-0.066, 0.203]`
+  - `player_2 mean = 0.1200` with `95% CI [-0.061, 0.301]`
+- Smaller non-zero means appear around `20-35` and at a few isolated longer horizons (`50`, `85`, `95`), but values remain low overall.
+- Confidence bands are often wide relative to the mean and usually include `0`, indicating substantial seed sensitivity and weak evidence for stable cooperation at those points.
+
+Interpretation:
+
+- This run is closer to "mostly defection with occasional local cooperation windows" than to stable broad cooperation across long horizons.
+- The result still illustrates the RL-vs-theory gap: independent PPO can produce pockets of cooperative behavior, but here those pockets are small and not robust across seeds.
+
+How the sweep mechanism works end-to-end:
+
+1. Load base environment settings from `config_env` and sweep controls from `config_sweep_max_rounds` in `config/config_env.py`.
+2. Read the list of `max_rounds` values to evaluate.
+3. For each `max_rounds` and each seed, generate timestamped per-seed files:
+   - `config_env_<timestamp>.py`
+   - `config_ppo_<timestamp>.py`
+   - `metrics_<timestamp>.json`
+4. Apply horizon-aware PPO scaling per `max_rounds`:
+   - `train_batch_size_per_learner = max(1024, 64 * (2 * max_rounds))`
+   - `minibatch_size = max(128, train_batch_size_per_learner // 8)` (rounded to multiple of 32)
+   - `num_epochs = 15` or `10` for large batches
+5. Run `scripts/tune_eval_rllib.py` for each seed and collect cooperation metrics.
+6. Aggregate by `max_rounds`:
+   - mean cooperation per player
+   - standard deviation
+   - confidence interval (normal approximation)
+7. Plot mean lines plus confidence bands for both players.
+8. Write timestamped aggregate outputs:
+   - `cooperation_vs_max_rounds_<timestamp>.png`
+   - `summary_<timestamp>.json`
