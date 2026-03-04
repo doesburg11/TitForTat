@@ -6,7 +6,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import random
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -594,8 +593,6 @@ def write_metrics_json(
 
 
 def main(config_env_path: Optional[str] = None):
-    if config_env_path is None and len(sys.argv) > 1:
-        raise ValueError("CLI args are disabled. Edit config/config_env.py.")
     run_config, resolved_env_config_path = resolve_run_config(config_env_path=config_env_path)
     print(f"[config] loaded env config: {resolved_env_config_path}")
 

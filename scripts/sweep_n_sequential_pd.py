@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import importlib.util
 import json
 import math
@@ -12,16 +11,40 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 
 DEFAULT_ENV_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "config_env.py"
-DEFAULT_ROUNDS = [ 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100 ]
+DEFAULT_N_SEQUENTIAL_GAMES_VALUES = [
+    5,
+    10,
+    15,
+    20,
+    25,
+    30,
+    35,
+    40,
+    45,
+    50,
+    55,
+    60,
+    65,
+    70,
+    75,
+    80,
+    85,
+    90,
+    95,
+    100,
+]
 TARGET_EPISODES_PER_UPDATE = 64
 MINIBATCH_DIVISOR = 8
 MIN_MINIBATCH_SIZE = 128
 MIN_TRAIN_BATCH_SIZE = 1024
 DEFAULT_SWEEP_CONFIG = {
+    "n_sequential_games_values": DEFAULT_N_SEQUENTIAL_GAMES_VALUES,
+    "output_dir": "checkpoints/sweep_n_sequential_pd",
+    "python_executable": None,
     "num_seeds": 1,
     "seed_start": 0,
     "ci_level": 0.95,
@@ -34,6 +57,30 @@ def _resolve_existing_file(path: str) -> Path:
     if candidate.is_absolute():
         return candidate.resolve()
     return (Path.cwd() / candidate).resolve()
+
+
+def _parse_n_sequential_games_values(values: Any) -> List[int]:
+    if isinstance(values, str):
+        parsed = []
+        for token in values.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            parsed.append(int(token))
+        values = parsed
+    if not isinstance(values, (list, tuple)):
+        raise TypeError(
+            "n_sequential_games_values must be a list/tuple of ints or a comma-separated string."
+        )
+    n_values: List[int] = []
+    for value in values:
+        numeric = int(value)
+        if numeric <= 0:
+            raise ValueError(f"n_sequential_games values must be > 0, got {numeric}")
+        n_values.append(numeric)
+    if not n_values:
+        raise ValueError("n_sequential_games_values must not be empty.")
+    return n_values
 
 
 def _load_config_env(path: str) -> tuple[Dict, str, Dict]:
@@ -55,6 +102,7 @@ def _load_config_env(path: str) -> tuple[Dict, str, Dict]:
         raise TypeError(
             f"`config_env` must be a dict, got {type(config_env).__name__} in {resolved_path}"
         )
+
     raw_sweep_config = getattr(module, SWEEP_CONFIG_VAR, {})
     if raw_sweep_config is None:
         raw_sweep_config = {}
@@ -66,8 +114,15 @@ def _load_config_env(path: str) -> tuple[Dict, str, Dict]:
     unknown_sweep_keys = sorted(set(raw_sweep_config.keys()) - set(DEFAULT_SWEEP_CONFIG.keys()))
     if unknown_sweep_keys:
         raise ValueError(f"Unknown keys in `{SWEEP_CONFIG_VAR}`: {unknown_sweep_keys}")
+
     sweep_config = dict(DEFAULT_SWEEP_CONFIG)
+    sweep_config["n_sequential_games_values"] = list(
+        DEFAULT_SWEEP_CONFIG["n_sequential_games_values"]
+    )
     sweep_config.update(raw_sweep_config)
+    sweep_config["n_sequential_games_values"] = _parse_n_sequential_games_values(
+        sweep_config["n_sequential_games_values"]
+    )
     return dict(config_env), str(resolved_path), sweep_config
 
 
@@ -109,24 +164,9 @@ def _build_tune_command(python_exe: str, env_config_path: str) -> List[str]:
     return [python_exe, "-c", runner]
 
 
-def _parse_rounds(values: str) -> List[int]:
-    rounds = []
-    for token in values.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        value = int(token)
-        if value <= 0:
-            raise ValueError(f"max_rounds values must be > 0, got {value}")
-        rounds.append(value)
-    if not rounds:
-        raise ValueError("No rounds provided.")
-    return rounds
-
-
-def _python_executable(cli_value: str | None) -> str:
-    if cli_value:
-        return cli_value
+def _python_executable(config_value: str | None) -> str:
+    if config_value:
+        return str(config_value)
     project_python = Path(".conda/bin/python").resolve()
     if project_python.exists():
         return str(project_python)
@@ -148,7 +188,7 @@ def _plot_results(results: List[Dict], output_path: Path) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    rounds = [item["max_rounds"] for item in results]
+    n_sequential_games_values = [item["n_sequential_games"] for item in results]
     coop_p1_mean = [
         float(item["cooperation_player_1_mean"])
         if item["cooperation_player_1_mean"] is not None
@@ -188,10 +228,22 @@ def _plot_results(results: List[Dict], output_path: Path) -> None:
 
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(10, 5))
-    line_p1, = ax.plot(rounds, coop_p1_mean, marker="o", linewidth=2.4, label="Player 1 mean")
-    line_p2, = ax.plot(rounds, coop_p2_mean, marker="s", linewidth=2.4, label="Player 2 mean")
+    line_p1, = ax.plot(
+        n_sequential_games_values,
+        coop_p1_mean,
+        marker="o",
+        linewidth=2.4,
+        label="Player 1 mean",
+    )
+    line_p2, = ax.plot(
+        n_sequential_games_values,
+        coop_p2_mean,
+        marker="s",
+        linewidth=2.4,
+        label="Player 2 mean",
+    )
     ax.fill_between(
-        rounds,
+        n_sequential_games_values,
         coop_p1_low,
         coop_p1_high,
         color=line_p1.get_color(),
@@ -199,7 +251,7 @@ def _plot_results(results: List[Dict], output_path: Path) -> None:
         label="Player 1 confidence band",
     )
     ax.fill_between(
-        rounds,
+        n_sequential_games_values,
         coop_p2_low,
         coop_p2_high,
         color=line_p2.get_color(),
@@ -210,7 +262,7 @@ def _plot_results(results: List[Dict], output_path: Path) -> None:
     ax.set_xlabel("number of repeated prisoner's dilemma games")
     ax.set_ylabel("cooperation rate")
     ax.set_ylim(0.0, 1.0)
-    ax.set_xticks(rounds)
+    ax.set_xticks(n_sequential_games_values)
     ax.legend()
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,9 +276,9 @@ def _round_down_to_multiple(value: int, multiple: int) -> int:
     return max(multiple, (value // multiple) * multiple)
 
 
-def _scaled_ppo_batch_settings(max_rounds: int) -> Dict[str, int]:
+def _scaled_ppo_batch_settings(n_sequential_games: int) -> Dict[str, int]:
     # Simultaneous-action env emits roughly 1 transition per game round.
-    approx_episode_steps = int(max_rounds)
+    approx_episode_steps = int(n_sequential_games)
     train_batch_size = max(
         MIN_TRAIN_BATCH_SIZE, TARGET_EPISODES_PER_UPDATE * approx_episode_steps
     )
@@ -282,60 +334,29 @@ def _mean_confidence_interval(values: List[float], ci_level: float) -> Dict[str,
     }
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--rounds",
-        type=str,
-        default=",".join(str(x) for x in DEFAULT_ROUNDS),
-        help="Comma-separated max_rounds values to sweep.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="checkpoints/sweep_n_sequential_pd",
-        help="Directory for per-round runs, summary JSON, and plot.",
-    )
-    parser.add_argument(
-        "--env-config",
-        type=str,
-        default=None,
-        help="Base config_env file path. Defaults to config/config_env.py.",
-    )
-    parser.add_argument(
-        "--python-executable",
-        type=str,
-        default=None,
-        help="Python executable used to launch scripts/tune_eval_rllib.py.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
+def main(config_env_path: str | None = None):
     _ensure_matplotlib_available()
-    rounds = _parse_rounds(args.rounds)
     run_timestamp = _timestamp_token()
+    if config_env_path is None:
+        config_env_path = str(DEFAULT_ENV_CONFIG_PATH)
 
-    if args.env_config is not None:
-        env_config_path = args.env_config
-    else:
-        env_config_path = str(DEFAULT_ENV_CONFIG_PATH)
-
-    base_env_config, resolved_env_config_path, sweep_config = _load_config_env(env_config_path)
+    base_env_config, resolved_env_config_path, sweep_config = _load_config_env(config_env_path)
     if "ppo_config" not in base_env_config:
         raise ValueError("config_env must define `ppo_config` for sweep runs.")
     base_ppo_config, resolved_ppo_config_path = _load_config_ppo(str(base_env_config["ppo_config"]))
+
     num_seeds = int(sweep_config["num_seeds"])
     seed_start = int(sweep_config["seed_start"])
     ci_level = float(sweep_config["ci_level"])
     if num_seeds <= 0:
-        raise ValueError("config_sweep_max_rounds.num_seeds must be > 0")
+        raise ValueError(f"{SWEEP_CONFIG_VAR}.num_seeds must be > 0")
     if not (0.0 < ci_level < 1.0):
-        raise ValueError("config_sweep_max_rounds.ci_level must be in (0, 1)")
+        raise ValueError(f"{SWEEP_CONFIG_VAR}.ci_level must be in (0, 1)")
     seeds = list(range(seed_start, seed_start + num_seeds))
-    python_exe = _python_executable(args.python_executable)
-    output_dir = Path(args.output_dir).expanduser().resolve()
+    n_sequential_games_values = list(sweep_config["n_sequential_games_values"])
+
+    python_exe = _python_executable(sweep_config.get("python_executable"))
+    output_dir = Path(str(sweep_config["output_dir"])).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     run_output_dir = output_dir / run_timestamp
     run_output_dir.mkdir(parents=True, exist_ok=True)
@@ -346,13 +367,13 @@ def main():
         base_env_config["eval_episodes"] = 1
 
     results = []
-    for max_rounds in rounds:
-        run_dir = run_output_dir / f"max_rounds_{max_rounds}"
+    for n_sequential_games in n_sequential_games_values:
+        run_dir = run_output_dir / f"n_sequential_games_{n_sequential_games}"
         run_dir.mkdir(parents=True, exist_ok=True)
         per_seed = []
         coop_values_p1: List[float] = []
         coop_values_p2: List[float] = []
-        scaled_settings = _scaled_ppo_batch_settings(max_rounds)
+        scaled_settings = _scaled_ppo_batch_settings(n_sequential_games)
 
         for seed in seeds:
             seed_dir = run_dir / f"seed_{seed}"
@@ -368,17 +389,15 @@ def main():
             _write_config_ppo(ppo_config_run_path, config_ppo)
 
             config_env["ppo_config"] = str(ppo_config_run_path)
-            config_env["n_sequential_games"] = int(max_rounds)
+            config_env["n_sequential_games"] = int(n_sequential_games)
             config_env["seed"] = int(seed)
             config_env["checkpoint_dir"] = str(checkpoint_dir)
             config_env["metrics_out"] = str(metrics_path)
             config_env["from_checkpoint"] = None
-
             _write_config_env(env_config_run_path, config_env)
 
             cmd = _build_tune_command(python_exe, str(env_config_run_path))
-
-            print(f"[sweep] running max_rounds={max_rounds} seed={seed}")
+            print(f"[sweep] running n_sequential_games={n_sequential_games} seed={seed}")
             subprocess.run(cmd, check=True)
 
             run_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
@@ -407,7 +426,7 @@ def main():
         stats_p2 = _mean_confidence_interval(coop_values_p2, ci_level)
         results.append(
             {
-                "max_rounds": max_rounds,
+                "n_sequential_games": n_sequential_games,
                 "num_seeds": len(seeds),
                 "cooperation_player_1_mean": stats_p1["mean"],
                 "cooperation_player_1_ci_low": stats_p1["ci_low"],
@@ -426,11 +445,11 @@ def main():
             }
         )
 
-    plot_path = run_output_dir / f"cooperation_vs_max_rounds_{run_timestamp}.png"
+    plot_path = run_output_dir / f"cooperation_vs_n_sequential_games_{run_timestamp}.png"
     _plot_results(results, plot_path)
 
     summary = {
-        "rounds": rounds,
+        "n_sequential_games_values": n_sequential_games_values,
         "base_env_config_path": resolved_env_config_path,
         "base_ppo_config_path": resolved_ppo_config_path,
         "run_timestamp": run_timestamp,

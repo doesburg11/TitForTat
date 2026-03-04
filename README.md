@@ -79,7 +79,7 @@ Legacy aliases are intentionally not supported anymore.
 Tune with two independent policies and evaluate:
 
 ```bash
-python scripts/tune_eval_rllib.py
+python -m scripts.tune_eval_rllib
 ```
 
 Evaluate only from a saved checkpoint:
@@ -98,6 +98,32 @@ Useful options:
 
 - Adjust `n_sequential_games` in `config/config_env.py`.
 
+Defection-gain check (approximate exploitability-style):
+
+```bash
+python -m scripts.check_defection_gain
+```
+
+Configure this via `config_defection_gain_check` in `config/config_env.py`:
+
+- `checkpoint`
+- `checkpoint_root`
+- `n_sequential_games`
+- `episodes`
+- `seed`
+- `output_json`
+- `gain_tol`
+
+`checkpoint` supports automatic latest-run selection:
+
+- Use `"latest"` (or `"auto"`) to pick the newest checkpoint under `checkpoint_root`.
+
+Interpretation:
+
+- `gain_player_1_defect > 0` means player 1 can improve by unilaterally switching to always-defect against fixed player 2.
+- `gain_player_2_defect > 0` means player 2 can improve by unilaterally switching to always-defect against fixed player 1.
+- If both gains are near `<= 0` (within tolerance), the checkpoint is more consistent with an all-defect equilibrium-like outcome.
+
 ## Experiment: Fixed Horizon (50 Rounds)
 
 Goal:
@@ -105,7 +131,7 @@ Goal:
 - Test whether the finite-horizon setup converges to all-defect behavior.
 
 ```bash
-python scripts/tune_eval_rllib.py
+python -m scripts.tune_eval_rllib
 ```
 
 Observed eval summary:
@@ -134,12 +160,25 @@ Recommended robust baseline:
 Run a stability sweep:
 
 ```bash
-python scripts/stability_sweep.py \
-  --num-seeds 8 \
-  --seed-start 0 \
-  --eval-episodes 100 \
-  --n-sequential-games 50
+python -m scripts.stability_sweep
 ```
+
+Configure this via `config_stability_sweep` in `config/config_env.py`:
+
+- `num_seeds`
+- `seed_start`
+- `output_dir`
+- `python_executable`
+- `ppo_config`
+- `eval_episodes`
+- `n_sequential_games`
+- `max_reward_cv`
+- `max_cooperation_std`
+- `max_rounds_cv`
+- `max_player_reward_gap`
+- `run_defection_gain_check`
+- `defection_gain_episodes`
+- `defection_gain_tol`
 
 `stability_sweep.py` now also auto-scales PPO batch settings by `n_sequential_games`
 to keep update statistics more comparable across round-length settings:
@@ -152,13 +191,14 @@ Each seed run gets its own generated `config_ppo.py` with these effective values
 During stability sweeps, these three keys override the corresponding values from the base
 `config/config_ppo.py` for fairness across `n_sequential_games` settings.
 
+`stability_sweep.py` can also run per-seed defection-gain checks automatically
+(no manual checkpoint insertion):
+
+- set `run_defection_gain_check = True`
+- set `defection_gain_episodes`
+- set `defection_gain_tol`
+
 To change PPO hyperparameters/resources, edit `config/config_ppo.py` and rerun.
-
-If RLlib is installed in a project-local interpreter, set it explicitly:
-
-```bash
-python scripts/stability_sweep.py --python-executable ./.conda/bin/python
-```
 
 Output:
 
@@ -166,25 +206,30 @@ Output:
 - Per-seed generated PPO config in `checkpoints/stability_sweep/seed_<seed>/config_ppo_<timestamp>.py`
 - Per-seed generated env config in `checkpoints/stability_sweep/seed_<seed>/config_env_<timestamp>.py`
 - Per-seed metrics in `checkpoints/stability_sweep/seed_<seed>/metrics_<timestamp>.json`
+- Optional per-seed defection-gain payloads in `checkpoints/stability_sweep/seed_<seed>/defection_gain_<timestamp>.json`
 - Aggregate summary in `checkpoints/stability_sweep/summary_<timestamp>.json`
 - Automatic `STABLE`/`UNSTABLE` verdict based on:
   - reward CV across seeds
   - cooperation-rate std across seeds
   - rounds-per-episode CV across seeds
   - mean player reward gap
+  - defection-gain non-positive rate across seeds (when enabled)
 
-## Sweep Max Rounds vs Cooperation
+## Sweep n_sequential_games vs Cooperation
 
 Sweep these `n_sequential_games` values and plot both players' cooperation rates:
 
 `[5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100]`
 
 ```bash
-python scripts/sweep_n_sequential_pd.py
+python -m scripts.sweep_n_sequential_pd
 ```
 
-Set sweep seed/CI controls in `config/config_env.py` under `config_sweep_max_rounds`:
+Set sweep controls in `config/config_env.py` under `config_sweep_n_sequential_pd`:
 
+- `n_sequential_games_values`
+- `output_dir`
+- `python_executable`
 - `num_seeds`
 - `seed_start`
 - `ci_level`
@@ -197,7 +242,7 @@ per `n_sequential_games` by generating a per-run `config_ppo.py`:
 - `num_epochs = 15` for smaller batches, `10` when `train_batch_size_per_learner >= 8192`
 
 This keeps the number of complete episodes per PPO update more stable as episode length grows.
-During this max-round sweep, these three keys override the corresponding values from the base
+During this `n_sequential_games` sweep, these three keys override the corresponding values from the base
 `config/config_ppo.py`.
 For each `n_sequential_games` value, the script now runs multiple seeds, computes mean cooperation per player,
 and plots confidence bands around each mean curve.
@@ -205,11 +250,11 @@ and plots confidence bands around each mean curve.
 Outputs:
 
 - Per-sweep run root in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/`
-- Per-round runs in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/max_rounds_<value>/`
-- Per-round, per-seed generated PPO config in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/max_rounds_<value>/seed_<seed>/config_ppo_<run_timestamp>.py`
-- Per-round, per-seed generated env config in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/max_rounds_<value>/seed_<seed>/config_env_<run_timestamp>.py`
-- Per-round, per-seed metrics in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/max_rounds_<value>/seed_<seed>/metrics_<run_timestamp>.json`
-- Plot in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/cooperation_vs_max_rounds_<run_timestamp>.png`
+- Per-round runs in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/n_sequential_games_<value>/`
+- Per-round, per-seed generated PPO config in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/n_sequential_games_<value>/seed_<seed>/config_ppo_<run_timestamp>.py`
+- Per-round, per-seed generated env config in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/n_sequential_games_<value>/seed_<seed>/config_env_<run_timestamp>.py`
+- Per-round, per-seed metrics in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/n_sequential_games_<value>/seed_<seed>/metrics_<run_timestamp>.json`
+- Plot in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/cooperation_vs_n_sequential_games_<run_timestamp>.png`
 - Summary JSON in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/summary_<run_timestamp>.json`
 
 Result incorporated here:
@@ -242,7 +287,7 @@ Interpretation:
 
 How the sweep mechanism works end-to-end:
 
-1. Load base environment settings from `config_env` and sweep controls from `config_sweep_max_rounds` in `config/config_env.py`.
+1. Load base environment settings from `config_env` and sweep controls from `config_sweep_n_sequential_pd` in `config/config_env.py`.
 2. Read the list of `n_sequential_games` values to evaluate.
 3. For each `n_sequential_games` value and each seed (10 seeds in this run), generate timestamped per-seed files:
    - `config_env_<timestamp>.py`
@@ -259,5 +304,5 @@ How the sweep mechanism works end-to-end:
    - confidence interval (normal approximation)
 7. Plot mean lines plus confidence bands for both players.
 8. Write timestamped aggregate outputs:
-   - `checkpoints/sweep_n_sequential_pd/<run_timestamp>/cooperation_vs_max_rounds_<run_timestamp>.png`
+   - `checkpoints/sweep_n_sequential_pd/<run_timestamp>/cooperation_vs_n_sequential_games_<run_timestamp>.png`
    - `checkpoints/sweep_n_sequential_pd/<run_timestamp>/summary_<run_timestamp>.json`

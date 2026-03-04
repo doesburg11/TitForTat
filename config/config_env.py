@@ -18,10 +18,61 @@ config_env = {
 }
 
 # Sweep-only settings for scripts/sweep_n_sequential_pd.py.
-# These are intentionally outside `config_env` to keep tune/eval runtime
-# parameters focused on training/evaluation and fixed-horizon env settings.
-config_sweep_max_rounds = {
+config_sweep_n_sequential_pd = {
+    "n_sequential_games_values": [
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100,
+    ],
+    "output_dir": "checkpoints/sweep_n_sequential_pd",
+    "python_executable": None,
     "num_seeds": 10,
     "seed_start": 0,
     "ci_level": 0.95,
+}
+
+# Sweep-only settings for scripts/stability_sweep.py.
+config_stability_sweep = {
+    "num_seeds": 5,
+    "seed_start": 0,
+    "output_dir": "checkpoints/stability_sweep",
+    "python_executable": None,
+    "ppo_config": "config/config_ppo.py",
+    "eval_episodes": 100,
+    "n_sequential_games": 50,
+    "max_reward_cv": 0.15,
+    "max_cooperation_std": 0.10,
+    "max_rounds_cv": 0.10,
+    "max_player_reward_gap": 1.0,
+    "run_defection_gain_check": True,
+    "defection_gain_episodes": 50,
+    "defection_gain_tol": 1e-9,
+}
+
+# Settings for scripts/check_defection_gain.py.
+config_defection_gain_check = {
+    "checkpoint": "latest",
+    "checkpoint_root": "checkpoints/sequential_pd_ppo",
+    "n_sequential_games": 100,
+    "episodes": 100,
+    "seed": None,
+    "output_json": None,
+    "gain_tol": 1e-9,
 }
