@@ -1,4 +1,4 @@
-"""Turn-based two-player Prisoner's Dilemma environment for RLlib."""
+"""Simultaneous-action two-player Prisoner's Dilemma environment for RLlib."""
 
 from __future__ import annotations
 
@@ -26,11 +26,11 @@ PAYOFF_MATRIX: Dict[Tuple[int, int], Tuple[float, float]] = {
 
 
 class SequentialPrisonersDilemmaEnv(MultiAgentEnv):
-    """Two-agent turn-based repeated Prisoner's Dilemma.
+    """Two-agent repeated Prisoner's Dilemma with simultaneous actions.
 
     Rules:
-    - Player 1 acts first, then Player 2 acts.
-    - A payoff is assigned after both actions in the round are known.
+    - Both players choose actions each round.
+    - A payoff is assigned from the joint action in that round.
     - Horizon mode can be one of:
       - `fixed`: always run exactly `max_rounds`.
       - `random_revealed`: sample episode horizon in [min_rounds, max_rounds].
@@ -70,7 +70,7 @@ class SequentialPrisonersDilemmaEnv(MultiAgentEnv):
         )
         shared_action_space = Discrete(2)  # 0=cooperate, 1=defect
 
-        # Preferred by RLlib's new API stack: per-agent space dicts.
+        # RLlib's new API stack: per-agent space dicts.
         self.observation_spaces = {
             agent_id: shared_observation_space for agent_id in AGENT_IDS
         }
@@ -83,8 +83,6 @@ class SequentialPrisonersDilemmaEnv(MultiAgentEnv):
         self.possible_agents = list(AGENT_IDS)
         self.agents = list(AGENT_IDS)
 
-        self._next_player = AGENT_IDS[0]
-        self._pending_action_player_1 = None
         self._last_joint_actions = (-1, -1)
         self.rounds_completed = 0
         self._episode_done = False
@@ -94,88 +92,63 @@ class SequentialPrisonersDilemmaEnv(MultiAgentEnv):
         if seed is not None:
             np.random.seed(seed)
 
-        self._next_player = AGENT_IDS[0]
-        self._pending_action_player_1 = None
         self._last_joint_actions = (-1, -1)
         self.rounds_completed = 0
         self._episode_done = False
         self._episode_horizon = self._sample_episode_horizon()
 
-        obs = {self._next_player: self._build_obs(self._next_player)}
+        obs = {agent_id: self._build_obs(agent_id) for agent_id in AGENT_IDS}
         infos = {
-            self._next_player: {
+            agent_id: {
                 "round": 1,
                 "episode_horizon": self._episode_horizon,
                 "horizon_mode": self.horizon_mode,
             }
+            for agent_id in AGENT_IDS
         }
         return obs, infos
 
     def step(self, action_dict):
         if self._episode_done:
             raise RuntimeError("step() called after episode is done; call reset().")
-        if self._next_player not in action_dict:
-            raise ValueError(f"Expected action for active agent {self._next_player}.")
+        missing_agents = [agent_id for agent_id in AGENT_IDS if agent_id not in action_dict]
+        if missing_agents:
+            raise ValueError(f"Missing actions for agents: {missing_agents}")
 
-        active_agent = self._next_player
-        action = int(action_dict[active_agent])
-        if action not in (COOPERATE, DEFECT):
-            raise ValueError(f"Invalid action {action}; expected 0 (cooperate) or 1 (defect).")
+        player_1_action = int(action_dict[AGENT_IDS[0]])
+        player_2_action = int(action_dict[AGENT_IDS[1]])
+        if player_1_action not in (COOPERATE, DEFECT):
+            raise ValueError(
+                f"Invalid action for {AGENT_IDS[0]}: {player_1_action}; "
+                "expected 0 (cooperate) or 1 (defect)."
+            )
+        if player_2_action not in (COOPERATE, DEFECT):
+            raise ValueError(
+                f"Invalid action for {AGENT_IDS[1]}: {player_2_action}; "
+                "expected 0 (cooperate) or 1 (defect)."
+            )
 
-        # Phase 1: Player 1 acts, then we hand the turn to Player 2.
-        if active_agent == AGENT_IDS[0]:
-            self._pending_action_player_1 = action
-            self._next_player = AGENT_IDS[1]
-
-            obs = {self._next_player: self._build_obs(self._next_player)}
-            rewards = {AGENT_IDS[0]: 0.0, AGENT_IDS[1]: 0.0}
-            terminateds = {"__all__": False}
-            truncateds = {"__all__": False}
-            infos = {
-                self._next_player: {
-                    "round": self.rounds_completed + 1,
-                    "episode_horizon": self._episode_horizon,
-                    "horizon_mode": self.horizon_mode,
-                }
-            }
-            return obs, rewards, terminateds, truncateds, infos
-
-        # Phase 2: Player 2 acts, round is complete, compute payoff.
-        player_1_action = int(self._pending_action_player_1)
-        player_2_action = action
         reward_player_1, reward_player_2 = PAYOFF_MATRIX[(player_1_action, player_2_action)]
 
         self.rounds_completed += 1
         self._last_joint_actions = (player_1_action, player_2_action)
-        self._pending_action_player_1 = None
 
         terminated_all = self._should_terminate_episode()
         truncated_all = False
 
         self._episode_done = terminated_all or truncated_all
-        self._next_player = AGENT_IDS[0]
-
-        if self._episode_done:
-            # RLlib's new API stack expects final observations for ended agents,
-            # especially for truncation value-bootstrapping.
-            obs = {agent_id: self._build_obs(agent_id) for agent_id in AGENT_IDS}
-            infos = {
-                agent_id: {
-                    "round": self.rounds_completed,
-                    "episode_horizon": self._episode_horizon,
-                    "horizon_mode": self.horizon_mode,
-                }
-                for agent_id in AGENT_IDS
+        # RLlib's new API stack expects final observations for ended agents,
+        # especially for truncation value-bootstrapping.
+        obs = {agent_id: self._build_obs(agent_id) for agent_id in AGENT_IDS}
+        next_round = self.rounds_completed if self._episode_done else self.rounds_completed + 1
+        infos = {
+            agent_id: {
+                "round": next_round,
+                "episode_horizon": self._episode_horizon,
+                "horizon_mode": self.horizon_mode,
             }
-        else:
-            obs = {self._next_player: self._build_obs(self._next_player)}
-            infos = {
-                self._next_player: {
-                    "round": self.rounds_completed + 1,
-                    "episode_horizon": self._episode_horizon,
-                    "horizon_mode": self.horizon_mode,
-                }
-            }
+            for agent_id in AGENT_IDS
+        }
 
         rewards = {
             AGENT_IDS[0]: reward_player_1,

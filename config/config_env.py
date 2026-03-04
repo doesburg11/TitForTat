@@ -12,10 +12,10 @@ config_env = {
     # Evaluation
     "eval_episodes": 20,
     # Environment horizon
-    "max_rounds": 10,
-    "min_rounds": 1,
-    "horizon_mode": "fixed",  # fixed | random_revealed | random_continuation
-    "continuation_prob": 0.95,
+    "max_rounds": 100,
+    "min_rounds": 5,
+    "horizon_mode": "random_continuation",  # fixed | random_revealed | random_continuation
+    "continuation_prob": 0.98,
     # Reproducibility
     "seed": None,
 }

@@ -1,8 +1,8 @@
-# Sequential Iterated Prisoner's Dilemma
+# Repeated Prisoner's Dilemma
 
 ## Overview
 
-This project studies a sequential iterated Prisoner's Dilemma with two independent learning agents using RLlib 2.54.0. Policies are learned via self-play.
+This project studies a repeated Prisoner's Dilemma with two independent learning agents using RLlib 2.54.0. Policies are learned via self-play.
 
 ## Environment and MARL Setup
 
@@ -14,7 +14,7 @@ This project studies a sequential iterated Prisoner's Dilemma with two independe
   - `(C, D) -> (0, 5)`
   - `(D, C) -> (5, 0)`
   - `(D, D) -> (1, 1)`
-- Turn order is sequential each round: Player 1 then Player 2
+- Actions are chosen simultaneously each round (both actions provided in one env step)
 - Horizon modes: `fixed`, `random_revealed`, `random_continuation`
 - Two independent RLlib policies are trained:
   - `policy_player_1` for `player_1`
@@ -56,13 +56,6 @@ Recommended reporting:
 - Mean episode return
 - Mean rounds (fixed at `max_rounds` by design)
 - Multiple random seeds (to detect equilibrium-selection effects)
-
-## Historical Background (Rapoport / Axelrod)
-
-- Anatol Rapoport is closely associated with Tit-for-Tat in repeated Prisoner's Dilemma research, including work with Albert Chammah in the 1960s.
-- In 1980 and 1981, political scientist Robert Axelrod ran computer tournaments for iterated Prisoner's Dilemma strategies.
-- Rapoport submitted Tit-for-Tat, and it ranked first in both tournaments.
-- Axelrod's 1984 book *The Evolution of Cooperation* made these results widely known and influential.
 
 ## Tuning and Evaluation (RLlib 2.54.0)
 
@@ -155,7 +148,7 @@ python scripts/stability_sweep.py \
 `stability_sweep.py` now also auto-scales PPO batch settings by `max_rounds`
 to keep update statistics more comparable across horizon choices:
 
-- `train_batch_size_per_learner = max(1024, 64 * (2 * max_rounds))`
+- `train_batch_size_per_learner = max(1024, 64 * max_rounds)`
 - `minibatch_size = max(128, train_batch_size_per_learner // 8)` (rounded to a multiple of 32)
 - `num_epochs = 15` for smaller batches, `10` when `train_batch_size_per_learner >= 8192`
 
@@ -203,7 +196,7 @@ Set sweep seed/CI controls in `config/config_env.py` under `config_sweep_max_rou
 To keep PPO updates comparable across horizons, the sweep now auto-scales batch settings
 per `max_rounds` by generating a per-run `config_ppo.py`:
 
-- `train_batch_size_per_learner = max(1024, 64 * (2 * max_rounds))`
+- `train_batch_size_per_learner = max(1024, 64 * max_rounds)`
 - `minibatch_size = max(128, train_batch_size_per_learner // 8)` (rounded to a multiple of 32)
 - `num_epochs = 15` for smaller batches, `10` when `train_batch_size_per_learner >= 8192`
 
@@ -224,40 +217,42 @@ Outputs:
 
 Result incorporated here:
 
-- Plot file: `checkpoints/max_rounds_cooperation_sweep/cooperation_vs_max_rounds_20260303_111907_840197.png`
-- Summary file: `checkpoints/max_rounds_cooperation_sweep/summary_20260303_111907_840197.json`
-- Seeds: `[0, 1, 2, 3, 4]` (5 runs per `max_rounds`)
+- Plot file: `checkpoints/max_rounds_cooperation_sweep/cooperation_vs_max_rounds_20260303_130810_199804.png`
+- Summary file: `checkpoints/max_rounds_cooperation_sweep/summary_20260303_130810_199804.json`
+- Seeds: `[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]` (10 runs per `max_rounds`)
 - Confidence level: `95%`
 
 <div align="center">
-  <img src="assets/cooperation_vs_max_rounds_20260303_111907_840197.png" alt="Sequential Iterated Prisoner's Dilemma cooperation chart (5 seeds, 95% CI)" width="1000" />
-  <p><strong>Display 2: Mean cooperation rates (5 seeds) across the number of repeated prisoner's dilemma games, with 95% confidence bands.</strong></p>
+  <img src="assets/cooperation_vs_max_rounds_20260303_130810_199804.png" alt="Sequential Iterated Prisoner's Dilemma cooperation chart (10 seeds, 95% CI)" width="1000" />
+  <p><strong>Display 2: Mean cooperation rates (10 seeds) across the number of repeated prisoner's dilemma games, with 95% confidence bands.</strong></p>
 </div>
 
 Observed result (this run):
 
-- Cooperation is mostly near zero for many horizons (`5, 10, 40, 45, 55, 70, 75, 90` are exactly `0.0` for both or nearly both players).
-- The strongest cooperation bump is at `max_rounds=35`:
-  - `player_1 mean = 0.0686` with `95% CI [-0.066, 0.203]`
-  - `player_2 mean = 0.1200` with `95% CI [-0.061, 0.301]`
-- Smaller non-zero means appear around `20-35` and at a few isolated longer horizons (`50`, `85`, `95`), but values remain low overall.
-- Confidence bands are often wide relative to the mean and usually include `0`, indicating substantial seed sensitivity and weak evidence for stable cooperation at those points.
+- Cooperation is near zero across most horizons; both players are exactly at `0.0` for `max_rounds = 5, 10, 40, 90, 100` and close to zero at many other points.
+- The largest local bumps are:
+  - `max_rounds=50`: `player_1 mean = 0.048` (`95% CI [-0.038, 0.134]`), `player_2 mean = 0.070` (`95% CI [-0.024, 0.164]`)
+  - `max_rounds=65`: `player_1 mean = 0.035` (`95% CI [0.000, 0.071]`), `player_2 mean = 0.114` (`95% CI [-0.031, 0.259]`)
+  - `max_rounds=25`: `player_1 mean = 0.036`, `player_2 mean = 0.028`
+- Only `3/20` round settings exceed a mean cooperation of `0.02` for each player.
+- Confidence intervals mostly include `0`, especially for player 2, indicating unstable and seed-sensitive cooperation effects.
 
 Interpretation:
 
-- This run is closer to "mostly defection with occasional local cooperation windows" than to stable broad cooperation across long horizons.
-- The result still illustrates the RL-vs-theory gap: independent PPO can produce pockets of cooperative behavior, but here those pockets are small and not robust across seeds.
+- With 10 seeds, the aggregate picture is more conservative than smaller-seed runs: cooperation is mostly weak and intermittent.
+- The dominant behavior is still close to defection, with a few non-robust local cooperation windows.
+- This remains consistent with the RL-vs-theory framing: independent PPO can create temporary cooperative pockets, but they do not appear broadly stable across horizons in this run.
 
 How the sweep mechanism works end-to-end:
 
 1. Load base environment settings from `config_env` and sweep controls from `config_sweep_max_rounds` in `config/config_env.py`.
 2. Read the list of `max_rounds` values to evaluate.
-3. For each `max_rounds` and each seed, generate timestamped per-seed files:
+3. For each `max_rounds` and each seed (10 seeds in this run), generate timestamped per-seed files:
    - `config_env_<timestamp>.py`
    - `config_ppo_<timestamp>.py`
    - `metrics_<timestamp>.json`
 4. Apply horizon-aware PPO scaling per `max_rounds`:
-   - `train_batch_size_per_learner = max(1024, 64 * (2 * max_rounds))`
+   - `train_batch_size_per_learner = max(1024, 64 * max_rounds)`
    - `minibatch_size = max(128, train_batch_size_per_learner // 8)` (rounded to multiple of 32)
    - `num_epochs = 15` or `10` for large batches
 5. Run `scripts/tune_eval_rllib.py` for each seed and collect cooperation metrics.

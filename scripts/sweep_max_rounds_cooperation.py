@@ -219,8 +219,8 @@ def _round_down_to_multiple(value: int, multiple: int) -> int:
 
 
 def _scaled_ppo_batch_settings(max_rounds: int) -> Dict[str, int]:
-    # Turn-based env emits roughly 2 transitions per game round.
-    approx_episode_steps = 2 * int(max_rounds)
+    # Simultaneous-action env emits roughly 1 transition per game round.
+    approx_episode_steps = int(max_rounds)
     train_batch_size = max(
         MIN_TRAIN_BATCH_SIZE, TARGET_EPISODES_PER_UPDATE * approx_episode_steps
     )
