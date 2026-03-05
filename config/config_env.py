@@ -46,6 +46,10 @@ config_sweep_n_sequential_pd = {
     "num_seeds": 20,
     "seed_start": 0,
     "ci_level": 0.95,
+    "hypothesis_test_alpha": 0.05,
+    "hypothesis_test_bootstrap_samples": 20000,
+    "hypothesis_test_bootstrap_seed": 0,
+    "hypothesis_test_correction": "holm",
 }
 
 # Sweep-only settings for scripts/stability_sweep.py.

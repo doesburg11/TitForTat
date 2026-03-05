@@ -233,6 +233,10 @@ Set sweep controls in `config/config_env.py` under `config_sweep_n_sequential_pd
 - `num_seeds`
 - `seed_start`
 - `ci_level`
+- `hypothesis_test_alpha`
+- `hypothesis_test_bootstrap_samples`
+- `hypothesis_test_bootstrap_seed`
+- `hypothesis_test_correction` (`holm` or `none`)
 
 To keep PPO updates comparable across horizons, the sweep now auto-scales batch settings
 per `n_sequential_games` by generating a per-run `config_ppo.py`:
@@ -256,6 +260,51 @@ Outputs:
 - Per-round, per-seed metrics in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/n_sequential_games_<value>/seed_<seed>/metrics_<run_timestamp>.json`
 - Plot in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/cooperation_vs_n_sequential_games_<run_timestamp>.png`
 - Summary JSON in `checkpoints/sweep_n_sequential_pd/<run_timestamp>/summary_<run_timestamp>.json`
+- Hypothesis test report in `summary_<run_timestamp>.json` under `hypothesis_testing` and per-result entries under `results[*].hypothesis_tests`
+
+Hypothesis testing details (two-sided + Holm):
+
+1. Unit of analysis:
+   - For each horizon `n_sequential_games` and each player separately, use the per-seed cooperation rates as samples.
+   - With 20 horizons and 2 players, this yields `40` tests total per sweep run.
+2. Null and alternative:
+   - `H0`: mean cooperation across seeds is `0`.
+   - `H1`: mean cooperation across seeds is not `0` (two-sided).
+3. Per-test p-value (bootstrap):
+   - Let observed per-seed values be `x_1, ..., x_n` and `m = mean(x)`.
+   - Construct a null sample by mean-centering: `x_i^0 = x_i - m` (so the null mean is exactly 0).
+   - Draw bootstrap resamples from `{x_i^0}` with replacement, compute bootstrap means `m_b`, and estimate:
+     - `p_raw = P(|m_b| >= |m|)` (two-sided tail probability, with +1 smoothing in numerator and denominator).
+   - This is robust to non-normal seed distributions.
+4. Multiple-testing correction (Holm-Bonferroni):
+   - Sort all raw p-values ascending: `p_(1) <= ... <= p_(m)`.
+   - Holm-adjust each by rank: `p_adj(i) = max_{j<=i}((m - j + 1) * p_(j))`, clipped to `1`.
+   - Compare adjusted p-values to `alpha` (default `0.05`).
+   - Reject `H0` only when `p_adj < alpha`.
+5. Why Holm:
+   - Controls family-wise error rate across all 40 tests.
+   - Less conservative than plain Bonferroni while still strict.
+
+How to read the summary JSON:
+
+- Global test block: `hypothesis_testing`
+  - `alpha`, `test`, `multiple_testing_correction`, `total_tests`
+  - `rejections_after_correction` lists significant `(n, player)` pairs.
+  - `rejection_counts_by_player` gives per-player totals.
+- Per-horizon block: `results[*].hypothesis_tests`
+  - For each player: `sample_size`, `mean`, `raw_p_value`, `adjusted_p_value`, `reject_null`.
+
+Tiny decision-table example (`alpha = 0.05`, Holm correction):
+
+| n_sequential_games | player   | mean cooperation | raw p-value | Holm-adjusted p-value | reject_null |
+| --- | --- | ---: | ---: | ---: | --- |
+| 5   | player_1 | 0.000000 | 1.000000 | 1.000000 | False |
+| 50  | player_1 | 0.138000 | 0.001400 | 0.055997 | False |
+
+Reading this:
+
+- `n=50, player_1` has a small **raw** p-value, but after Holm correction it is `0.055997 > 0.05`, so it is not significant at the family-wise level.
+- `reject_null=False` means we fail to reject `H0: mean cooperation = 0` for that `(n, player)` under the configured correction.
 
 Result incorporated here:
 
@@ -279,6 +328,7 @@ Observed result (this run):
   - `n_sequential_games=75`: `player_1 mean = 0.077` (`95% CI [-0.004, 0.158]`), `player_2 mean = 0.121` (`95% CI [0.009, 0.233]`)
 - Low-cooperation settings still exist: both means are `<= 0.01` at `n_sequential_games = 5, 10, 15, 25`.
 - Confidence intervals include `0` for about half of the horizons (`10/20` for player 1, `9/20` for player 2), indicating substantial seed sensitivity.
+- Under two-sided hypothesis tests with Holm correction over 40 tests, no `(n, player)` pair is significant at `alpha=0.05` in this run.
 
 Interpretation:
 
@@ -303,7 +353,8 @@ How the sweep mechanism works end-to-end:
    - mean cooperation per player
    - standard deviation
    - confidence interval (normal approximation)
-7. Plot mean lines plus confidence bands for both players.
-8. Write timestamped aggregate outputs:
+7. Run two-sided hypothesis tests per player and horizon (`H0: mean cooperation across seeds = 0`) and apply multiple-testing correction.
+8. Plot mean lines plus confidence bands for both players.
+9. Write timestamped aggregate outputs:
    - `checkpoints/sweep_n_sequential_pd/<run_timestamp>/cooperation_vs_n_sequential_games_<run_timestamp>.png`
    - `checkpoints/sweep_n_sequential_pd/<run_timestamp>/summary_<run_timestamp>.json`

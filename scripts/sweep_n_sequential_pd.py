@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+import numpy as np
+
 
 DEFAULT_ENV_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "config_env.py"
 DEFAULT_N_SEQUENTIAL_GAMES_VALUES = [
@@ -48,6 +50,10 @@ DEFAULT_SWEEP_CONFIG = {
     "num_seeds": 1,
     "seed_start": 0,
     "ci_level": 0.95,
+    "hypothesis_test_alpha": 0.05,
+    "hypothesis_test_bootstrap_samples": 20000,
+    "hypothesis_test_bootstrap_seed": 0,
+    "hypothesis_test_correction": "holm",
 }
 SWEEP_CONFIG_VAR = "config_sweep_n_sequential_pd"
 
@@ -334,6 +340,131 @@ def _mean_confidence_interval(values: List[float], ci_level: float) -> Dict[str,
     }
 
 
+def _extract_numeric_values(per_seed: List[Dict[str, Any]], key: str) -> List[float]:
+    values: List[float] = []
+    for row in per_seed:
+        value = row.get(key)
+        if value is None:
+            continue
+        numeric = float(value)
+        if math.isfinite(numeric):
+            values.append(numeric)
+    return values
+
+
+def _bootstrap_two_sided_mean_p_value(
+    values: List[float],
+    bootstrap_samples: int,
+    rng: np.random.Generator,
+) -> float | None:
+    if not values:
+        return None
+
+    samples = np.asarray(values, dtype=np.float64)
+    observed_mean = float(samples.mean())
+    if samples.size == 1:
+        return 1.0 if abs(observed_mean) <= 1e-12 else 0.0
+
+    # Null construction via mean-centering: bootstrap from data under H0: mean == 0.
+    centered = samples - observed_mean
+    n = centered.size
+    indices = rng.integers(0, n, size=(bootstrap_samples, n), endpoint=False)
+    bootstrap_means = centered[indices].mean(axis=1)
+    extreme = np.count_nonzero(np.abs(bootstrap_means) >= abs(observed_mean))
+    return float((extreme + 1) / (bootstrap_samples + 1))
+
+
+def _holm_bonferroni(p_values: List[float]) -> List[float]:
+    m = len(p_values)
+    if m == 0:
+        return []
+
+    order = sorted(range(m), key=lambda idx: p_values[idx])
+    adjusted = [1.0] * m
+    running_max = 0.0
+    for rank, idx in enumerate(order):
+        scaled = (m - rank) * p_values[idx]
+        scaled = 1.0 if scaled > 1.0 else scaled
+        running_max = max(running_max, scaled)
+        adjusted[idx] = running_max
+    return adjusted
+
+
+def _run_hypothesis_tests(
+    results: List[Dict[str, Any]],
+    alpha: float,
+    bootstrap_samples: int,
+    bootstrap_seed: int,
+    correction: str,
+) -> Dict[str, Any]:
+    rng = np.random.default_rng(bootstrap_seed)
+    tests: List[Dict[str, Any]] = []
+
+    for result in results:
+        n_sequential_games = int(result["n_sequential_games"])
+        per_seed = result.get("per_seed", [])
+        player_values = {
+            "player_1": _extract_numeric_values(per_seed, "cooperation_player_1"),
+            "player_2": _extract_numeric_values(per_seed, "cooperation_player_2"),
+        }
+
+        result_tests: Dict[str, Any] = {}
+        for player, values in player_values.items():
+            raw_p_value = _bootstrap_two_sided_mean_p_value(values, bootstrap_samples, rng)
+            test_payload = {
+                "n_sequential_games": n_sequential_games,
+                "player": player,
+                "sample_size": len(values),
+                "mean": float(statistics.fmean(values)) if values else None,
+                "raw_p_value": raw_p_value,
+                "adjusted_p_value": raw_p_value,
+                "reject_null": False,
+            }
+            result_tests[player] = test_payload
+            tests.append(test_payload)
+        result["hypothesis_tests"] = result_tests
+
+    valid_tests = [test for test in tests if test["raw_p_value"] is not None]
+    raw_p_values = [float(test["raw_p_value"]) for test in valid_tests]
+    if correction == "holm":
+        adjusted_p_values = _holm_bonferroni(raw_p_values)
+    else:
+        adjusted_p_values = raw_p_values
+
+    for test, adjusted_p in zip(valid_tests, adjusted_p_values):
+        test["adjusted_p_value"] = float(adjusted_p)
+        test["reject_null"] = bool(adjusted_p < alpha)
+
+    rejected_tests = [
+        {
+            "n_sequential_games": test["n_sequential_games"],
+            "player": test["player"],
+            "sample_size": test["sample_size"],
+            "mean": test["mean"],
+            "adjusted_p_value": test["adjusted_p_value"],
+        }
+        for test in valid_tests
+        if test["reject_null"]
+    ]
+    rejection_counts_by_player = {
+        "player_1": sum(1 for item in rejected_tests if item["player"] == "player_1"),
+        "player_2": sum(1 for item in rejected_tests if item["player"] == "player_2"),
+    }
+
+    return {
+        "null_hypothesis": "mean cooperation rate across seeds equals 0",
+        "alternative_hypothesis": "mean cooperation rate across seeds does not equal 0",
+        "alpha": alpha,
+        "test": "two-sided null-centered bootstrap test on seed means",
+        "bootstrap_samples": bootstrap_samples,
+        "bootstrap_seed": bootstrap_seed,
+        "multiple_testing_correction": correction,
+        "total_tests": len(valid_tests),
+        "rejections_after_correction": rejected_tests,
+        "rejection_counts_by_player": rejection_counts_by_player,
+    }
+
+
 def main(config_env_path: str | None = None):
     _ensure_matplotlib_available()
     run_timestamp = _timestamp_token()
@@ -348,10 +479,22 @@ def main(config_env_path: str | None = None):
     num_seeds = int(sweep_config["num_seeds"])
     seed_start = int(sweep_config["seed_start"])
     ci_level = float(sweep_config["ci_level"])
+    hypothesis_test_alpha = float(sweep_config["hypothesis_test_alpha"])
+    hypothesis_test_bootstrap_samples = int(sweep_config["hypothesis_test_bootstrap_samples"])
+    hypothesis_test_bootstrap_seed = int(sweep_config["hypothesis_test_bootstrap_seed"])
+    hypothesis_test_correction = str(sweep_config["hypothesis_test_correction"]).strip().lower()
     if num_seeds <= 0:
         raise ValueError(f"{SWEEP_CONFIG_VAR}.num_seeds must be > 0")
     if not (0.0 < ci_level < 1.0):
         raise ValueError(f"{SWEEP_CONFIG_VAR}.ci_level must be in (0, 1)")
+    if not (0.0 < hypothesis_test_alpha < 1.0):
+        raise ValueError(f"{SWEEP_CONFIG_VAR}.hypothesis_test_alpha must be in (0, 1)")
+    if hypothesis_test_bootstrap_samples <= 0:
+        raise ValueError(f"{SWEEP_CONFIG_VAR}.hypothesis_test_bootstrap_samples must be > 0")
+    if hypothesis_test_correction not in {"holm", "none"}:
+        raise ValueError(
+            f"{SWEEP_CONFIG_VAR}.hypothesis_test_correction must be one of ['holm', 'none']"
+        )
     seeds = list(range(seed_start, seed_start + num_seeds))
     n_sequential_games_values = list(sweep_config["n_sequential_games_values"])
 
@@ -448,6 +591,14 @@ def main(config_env_path: str | None = None):
     plot_path = run_output_dir / f"cooperation_vs_n_sequential_games_{run_timestamp}.png"
     _plot_results(results, plot_path)
 
+    hypothesis_testing = _run_hypothesis_tests(
+        results=results,
+        alpha=hypothesis_test_alpha,
+        bootstrap_samples=hypothesis_test_bootstrap_samples,
+        bootstrap_seed=hypothesis_test_bootstrap_seed,
+        correction=hypothesis_test_correction,
+    )
+
     summary = {
         "n_sequential_games_values": n_sequential_games_values,
         "base_env_config_path": resolved_env_config_path,
@@ -464,6 +615,7 @@ def main(config_env_path: str | None = None):
         },
         "output_dir": str(run_output_dir),
         "plot_path": str(plot_path),
+        "hypothesis_testing": hypothesis_testing,
         "results": results,
     }
     summary_path = run_output_dir / f"summary_{run_timestamp}.json"
@@ -471,6 +623,13 @@ def main(config_env_path: str | None = None):
 
     print(f"[sweep] wrote summary: {summary_path}")
     print(f"[sweep] wrote plot:    {plot_path}")
+    print(
+        "[sweep] hypothesis tests: "
+        f"{len(hypothesis_testing['rejections_after_correction'])}/"
+        f"{hypothesis_testing['total_tests']} rejected "
+        f"(alpha={hypothesis_testing['alpha']}, "
+        f"correction={hypothesis_testing['multiple_testing_correction']})"
+    )
 
 
 if __name__ == "__main__":
